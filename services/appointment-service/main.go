@@ -5,44 +5,55 @@ import (
 	"log"
 	"time"
 
-	pb "appointment-service/pb"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
+	"appointment-service/consumer"
+	"appointment-service/publisher"
 )
 
 func main() {
-	log.Println("[Appointment Service] Menginisialisasi koneksi gRPC ke Pharmacy Service...")
+	amqpURI := "amqp://admin_medcore:SecuredPassRabbit2026!@localhost:5672/%2Fmedcore_vhost"
+	log.Println("[Appointment Service] Menginisialisasi koneksi messaging...")
 
-	conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// 1. Jalankan Consumer Kompensasi Stok (Langkah 2.4) di background
+	go consumer.StartStockExhaustedConsumer(amqpURI)
+
+	// 2. Inisialisasi Publisher
+	pub, err := publisher.NewEventPublisher(amqpURI)
 	if err != nil {
-		log.Fatalf("Tidak dapat membentuk koneksi ke Pharmacy Service: %v", err)
+		log.Fatalf("Inisialisasi publisher gagal: %v", err)
 	}
-	defer conn.Close()
+	defer pub.Close()
 
-	client := pb.NewPharmacyServiceClient(conn)
-
-	requestValid := &pb.CheckDrugRequest{
-		DrugCode:       "MED-AMX-500",
-		QuantityNeeded: 20,
+	// 3. Simulasi event ketika konsultasi selesai (UJI DLQ)
+	simulatedEvent := publisher.ConsultationCompletedEvent{
+		EventID:    "evt-uji-duplikat-123",
+		EventName:  "ConsultationCompletedEvent",
+		OccurredAt: time.Now().UTC().Format(time.RFC3339),
+		Producer:   "appointment-service",
+		Payload: publisher.ConsultationPayload{
+			AppointmentID:      "b1111111-1111-1111-1111-111111111111",
+			PatientID:          "a0000000-0000-0000-0000-000000000001",
+			DoctorID:           "b0000000-0000-0000-0000-000000000001",
+			ConsultationStatus: "COMPLETED",
+			Prescription: publisher.PrescriptionData{
+				PrescriptionID: "RX-2026-9901",
+				Items: []publisher.PrescriptionItem{
+					// QUANTITY DIUBAH MENJADI -1 UNTUK UJI DLQ
+					{DrugCode: "MED-AMX-500", Quantity: -1, Dosage: "3x1 sehari sesudah makan"},
+				},
+			},
+			BillingSummary: publisher.BillingData{
+				ConsultationFee: 150000.0,
+				TriageUrgency:   "GREEN",
+			},
+		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	log.Printf("[RPC Call] Mengirim permintaan validasi obat: %s", requestValid.DrugCode)
-	resp, err := client.CheckDrugAvailability(ctx, requestValid)
-	if err != nil {
-		st, _ := status.FromError(err)
-		log.Fatalf("RPC Gagal: Code=%s, Message=%s", st.Code(), st.Message())
+	log.Println("[Appointment Service] Menerbitkan event konsultasi ke RabbitMQ...")
+	if err := pub.PublishConsultationCompleted(ctx, simulatedEvent); err != nil {
+		log.Fatalf("Gagal mempublikasikan event: %v", err)
 	}
-
-	log.Println("================ HASIL RESPON gRPC ================")
-	log.Printf("Kode Obat      : %s", resp.GetDrugCode())
-	log.Printf("Tersedia       : %t", resp.GetIsAvailable())
-	log.Printf("Stok Aktual    : %d", resp.GetCurrentStock())
-	log.Printf("Harga Satuan   : Rp %.2f", resp.GetUnitPrice())
-	log.Printf("Catatan Sistem : %s", resp.GetMessage())
-	log.Println("==================================================")
+	log.Println("[Appointment Service] Proses publikasi selesai sempurna.")
 }
