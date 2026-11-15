@@ -22,7 +22,7 @@ import (
 
 const (
 	mongoURI        = "mongodb://adm_pharmacy_svc:SecuredPassPharm2026!@localhost:27018/medcore_pharmacy_db?authSource=admin"
-	// PERHATIKAN BARIS DI BAWAH INI: Ada tambahan %2F sebelum medcore_vhost
+	// PERHATIKAN: Tambahan %2F wajib ada untuk koneksi ke RabbitMQ vhost
 	amqpURI         = "amqp://admin_medcore:SecuredPassRabbit2026!@localhost:5672/%2Fmedcore_vhost"
 	grpcPort        = ":50051"
 	restPort        = ":8081"
@@ -53,8 +53,7 @@ func (s *server) CheckDrugAvailability(ctx context.Context, req *pb.CheckDrugReq
 	}
 
 	if req.GetQuantityNeeded() > quotaThreshold {
-		return nil, status.Errorf(codes.ResourceExhausted,
-			"Permintaan %d melebihi batas kuota farmasi (%d)", req.GetQuantityNeeded(), quotaThreshold)
+		return nil, status.Errorf(codes.ResourceExhausted, "Permintaan %d melebihi batas kuota farmasi (%d)", req.GetQuantityNeeded(), quotaThreshold)
 	}
 
 	if req.GetDrugCode() == "" {
@@ -67,8 +66,7 @@ func (s *server) CheckDrugAvailability(ctx context.Context, req *pb.CheckDrugReq
 	err := coll.FindOne(ctx, bson.M{"drug_code": req.GetDrugCode()}).Decode(&drug)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			return nil, status.Errorf(codes.NotFound,
-				"Obat dengan kode %s tidak ditemukan dalam inventaris", req.GetDrugCode())
+			return nil, status.Errorf(codes.NotFound, "Obat dengan kode %s tidak ditemukan dalam inventaris", req.GetDrugCode())
 		}
 		return nil, status.Errorf(codes.Internal, "Database error: %v", err)
 	}
@@ -79,8 +77,7 @@ func (s *server) CheckDrugAvailability(ctx context.Context, req *pb.CheckDrugReq
 			IsAvailable:  false,
 			CurrentStock: drug.TotalStock,
 			UnitPrice:    drug.UnitPrice,
-			Message: fmt.Sprintf("Stok tidak mencukupi. Tersedia: %d, Dibutuhkan: %d",
-				drug.TotalStock, req.GetQuantityNeeded()),
+			Message:      fmt.Sprintf("Stok tidak mencukupi. Tersedia: %d, Dibutuhkan: %d", drug.TotalStock, req.GetQuantityNeeded()),
 		}, nil
 	}
 

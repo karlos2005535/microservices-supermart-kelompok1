@@ -1,4 +1,4 @@
-networks:
+﻿networks:
   medcore-net:
     driver: bridge
     ipam:
@@ -10,7 +10,6 @@ volumes:
   appointment_db_vol:
   pharmacy_db_vol:
   billing_db_vol:
-  rabbitmq_data:
 
 services:
   patient-db:
@@ -65,7 +64,7 @@ services:
     image: mysql:8.0
     container_name: medcore-billing-db
     environment:
-      MYSQL_ROOT_PASSWORD: ${BILLING_DB_PASS}
+      MYSQL_ROOT_PASSWORD: ${BILLING_DB_ROOT_PASS}
       MYSQL_DATABASE: ${BILLING_DB_NAME}
       MYSQL_USER: ${BILLING_DB_USER}
       MYSQL_PASSWORD: ${BILLING_DB_PASS}
@@ -77,19 +76,3 @@ services:
     networks:
       medcore-net:
         ipv4_address: 172.28.0.14
-
-  message-broker:
-    image: rabbitmq:3.13-management-alpine
-    container_name: medcore-message-broker
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_DEFAULT_VHOST}
-    ports:
-      - "${RABBITMQ_HOST_PORT_AMQP}:5672" # Port Protokol AMQP 0-9-1
-      - "${RABBITMQ_HOST_PORT_MGMT}:15672" # Port Dasbor Web Manajemen
-    networks:
-      medcore-net:
-        ipv4_address: 172.28.0.20
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
