@@ -10,7 +10,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 
-	// Import package publisher untuk mengirim event kompensasi
+	// Import publisher untuk mengirim pesan balik (kompensasi) jika stok habis
 	"pharmacy-service/publisher"
 )
 
@@ -35,7 +35,7 @@ type ProcessedEventRecord struct {
 }
 
 func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
-	// Inisialisasi Redis untuk Idempotency
+	// [DEMO - REDIS] Inisialisasi koneksi ke Redis (sebagai Fast-Path Cache)
 	idem := NewRedisIdempotency("localhost:6379")
 
 	conn, err := amqp.Dial(amqpURI)
@@ -50,23 +50,25 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 	}
 	defer ch.Close()
 
-	// 1. Deklarasikan Queue durable dengan DLX
+	// [DEMO - DLQ] Mendeklarasikan antrean dengan argumen Dead Letter Exchange (DLX).
+	// Jika ada pesan yang ditolak (NACK), RabbitMQ akan melemparnya ke DLX.
 	args := amqp.Table{
 		"x-dead-letter-exchange": "medcore.deadletter.exchange",
 	}
 	q, err := ch.QueueDeclare(
 		"pharmacy.prescription.order.q",
-		true,  // Durable
+		true,  // Durable: Antrean tidak hilang jika RabbitMQ restart
 		false, // Auto-delete
 		false, // Exclusive
 		false, // No-wait
-		args,  // Arguments
+		args,  // Arguments DLX
 	)
 	if err != nil {
 		log.Fatalf("[Pharmacy Consumer] Gagal deklarasi queue: %v", err)
 	}
 
-	// 2. Ikat Queue ke Exchange
+	// [DEMO - BINDING] Menghubungkan antrean ke Exchange.
+	// Tanda bintang (*) artinya menerima event apapun yang berakhiran 'clinical.consultation.sesuatu'
 	err = ch.QueueBind(
 		q.Name,
 		"clinical.consultation.*",
@@ -78,17 +80,19 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 		log.Fatalf("[Pharmacy Consumer] Gagal binding queue: %v", err)
 	}
 
-	// 3. Set QoS = 1
+	// [DEMO - QOS] Prefetch Count = 10. 
+	// Tujuan: Maksimal 10 pesan yang dipegang di RAM. Mencegah server OOM/Crash jika pesan menumpuk.
 	err = ch.Qos(10, 0, false)
 	if err != nil {
 		log.Fatalf("[Pharmacy Consumer] Gagal set QoS: %v", err)
 	}
 
-	// 4. Consume
+	// [DEMO - MANUAL ACK] autoAck = FALSE.
+	// Artinya: Pesan dianggap selesai HANYA JIKA kita memanggil d.Ack(false) secara manual.
 	msgs, err := ch.Consume(
 		q.Name,
 		"pharmacy-worker",
-		false, // autoAck = FALSE (Manual ACK)
+		false, // autoAck = FALSE (Wajib Manual ACK untuk keandalan)
 		false,
 		false,
 		false,
@@ -106,7 +110,8 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 			var evt EventEnvelope
 			if err := json.Unmarshal(d.Body, &evt); err != nil {
 				log.Printf("[Pharmacy Consumer] Format pesan tidak valid, NACK tanpa requeue: %v", err)
-				d.Nack(false, false) // Langsung ke DLQ
+				// [DEMO - POISON PILL] Jika JSON rusak, langsung buang ke DLQ (requeue = false)
+				d.Nack(false, false) 
 				continue
 			}
 
@@ -125,32 +130,35 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 				}
 			}
 
+			// [DEMO - POISON PILL] Jika kuantitas negatif/nol, tolak pesan.
 			if isPoison {
 				log.Printf("[Pharmacy Consumer] Terdeteksi Poison Message! Mengirim NACK ke DLQ.")
-				d.Nack(false, false) // requeue = FALSE -> DLX
+				// requeue = FALSE -> Pesan dialihkan ke DLQ (pharmacy.dlq)
+				d.Nack(false, false) 
 				log.Println("---------------------------------------------------------")
 				continue
 			}
 
 			// -------------------------------------------------------------
-			// SIMULASI STOK HABIS (LANGKAH 2.4)
-			// Ubah menjadi true jika ingin menguji pengiriman event kompensasi
+			// [DEMO - KOMPENSASI STOK] Simulasi jika stok obat di gudang kosong.
+			// Ubah menjadi true saat presentasi untuk menunjukkan event balik ke Appointment.
 			// -------------------------------------------------------------
-			stokHabis := true
+			stokHabis := true 
 			if stokHabis {
 				log.Printf("[Pharmacy Consumer] Stok kosong! Mengirim event kompensasi ke Appointment...")
-				// Memanggil fungsi dari package publisher
+				// Memanggil fungsi dari package publisher (mengirim event balik ke RabbitMQ)
 				publisher.PublishStockExhausted(amqpURI, evt.Payload.AppointmentID, "MED-AMX-500")
-				d.Ack(false) // Tetap ACK karena pesan berhasil ditangani
+				// Tetap ACK karena pesan berhasil ditangani (pesanan gagal, tapi sistem berjalan sukses)
+				d.Ack(false) 
 				log.Println("---------------------------------------------------------")
 				continue
 			}
 			// -------------------------------------------------------------
 
-			// Siapkan Context untuk Redis dan MongoDB
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-			// --- REDIS FAST-PATH ---
+			// [DEMO - REDIS FAST-PATH] Pengecekan duplikat TERCEPAT.
+			// Mengecek apakah EventID ini sudah ada di Redis (memori).
 			status, acquired, err := idem.TryAcquire(ctx, evt.EventID)
 			if err != nil {
 				log.Printf("[Pharmacy Consumer] Redis error: %v, requeue", err)
@@ -166,6 +174,7 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 					log.Println("---------------------------------------------------------")
 					continue
 				}
+				// Jika statusnya masih 'PROCESSING' oleh worker lain, kembalikan ke antrean
 				log.Printf("[Deduplication Guard - REDIS] Event %s sedang diproses, requeue.", evt.EventID)
 				d.Nack(false, true)
 				cancel()
@@ -173,23 +182,24 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 				continue
 			}
 
-			// --- MONGODB FALLBACK ---
+			// [DEMO - MONGO FALLBACK] Jika di Redis tidak ada (atau Redis mati), cek ke MongoDB.
+			// Ini adalah pertahanan lapis kedua (Durable Storage).
 			eventColl := mongoClient.Database("medcore_pharmacy_db").Collection("processed_events")
 			var existing ProcessedEventRecord
 			err = eventColl.FindOne(ctx, bson.M{"event_id": evt.EventID}).Decode(&existing)
 			if err == nil {
 				log.Printf("[Deduplication Guard - MONGO] Event %s duplikat! ACK.", evt.EventID)
-				_ = idem.MarkSuccess(ctx, evt.EventID)
+				_ = idem.MarkSuccess(ctx, evt.EventID) // Sinkronkan kembali ke Redis
 				d.Ack(false)
 				cancel()
 				log.Println("---------------------------------------------------------")
 				continue
 			}
 
-			// Simulasi Logika Bisnis (Pemotongan Stok)
+			// Logika Bisnis (Pemotongan Stok)
 			log.Printf("[Business Logic] Memproses stok resep untuk Event ID: %s", evt.EventID)
 
-			// Catat Event ID ke MongoDB
+			// Simpan ID Event ke MongoDB sebagai riwayat permanen
 			_, err = eventColl.InsertOne(ctx, ProcessedEventRecord{
 				EventID:     evt.EventID,
 				ProcessedAt: time.Now(),
@@ -198,13 +208,13 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 			
 			if err != nil {
 				log.Printf("[Error] Gagal mencatat deduplikasi: %v. Requeue pesan.", err)
-				d.Nack(false, true) // Requeue ke antrean utama
+				d.Nack(false, true) 
 				cancel()
 				log.Println("---------------------------------------------------------")
 				continue
 			}
 
-			// --- TRANSAKSI SUKSES ---
+			// [DEMO - SUKSES] Tandai Redis sukses, lalu konfirmasi ACK ke RabbitMQ.
 			_ = idem.MarkSuccess(ctx, evt.EventID)
 			d.Ack(false)
 			cancel()

@@ -22,7 +22,10 @@ type StockExhaustedEvent struct {
 	} `json:"payload"`
 }
 
+// [DEMO - KOMPENSASI] Fungsi ini dipanggil oleh Consumer Farmasi jika stok kosong.
+// Fungsinya: Memberi tahu Appointment Service bahwa pesanan tidak bisa dilanjutkan.
 func PublishStockExhausted(amqpURI, appointmentID, drugCode string) {
+	// 1. Buka koneksi baru ke RabbitMQ (karena berjalan di goroutine terpisah)
 	conn, err := amqp.Dial(amqpURI)
 	if err != nil {
 		log.Printf("[Pharmacy Publisher] Gagal koneksi: %v", err)
@@ -37,6 +40,7 @@ func PublishStockExhausted(amqpURI, appointmentID, drugCode string) {
 	}
 	defer ch.Close()
 
+	// 2. Bentuk payload event kompensasi
 	event := StockExhaustedEvent{
 		EventID:    fmt.Sprintf("evt-%s", uuid.New().String()),
 		EventName:  "StockExhaustedEvent",
@@ -48,13 +52,14 @@ func PublishStockExhausted(amqpURI, appointmentID, drugCode string) {
 
 	body, _ := json.Marshal(event)
 	
+	// 3. Kirim ke RabbitMQ
 	err = ch.PublishWithContext(
 		context.Background(),
-		"medcore.clinical.events",
-		"pharmacy.stock.exhausted",
+		"medcore.clinical.events", // Exchange Utama
+		"pharmacy.stock.exhausted", // [DEMO - ROUTING KEY] Kunci khusus kompensasi
 		false, false,
 		amqp.Publishing{
-			DeliveryMode: amqp.Persistent,
+			DeliveryMode: amqp.Persistent, // Wajib Persistent
 			ContentType:  "application/json",
 			Body:         body,
 		},
