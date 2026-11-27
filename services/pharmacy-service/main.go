@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	mongoURI        = "mongodb://adm_pharmacy_svc:SecuredPassPharm2026!@localhost:27018/medcore_pharmacy_db?authSource=admin"
-	// PERHATIKAN: Tambahan %2F wajib ada untuk koneksi ke RabbitMQ vhost
+	// [JELASKAN INI] Menggunakan user 'root' dan port 27018 sesuai dengan konfigurasi Docker.
+	mongoURI        = "mongodb://root:mongo_password123@localhost:27018/medcore_pharmacy_db?authSource=admin"
 	amqpURI         = "amqp://admin_medcore:SecuredPassRabbit2026!@localhost:5672/%2Fmedcore_vhost"
 	grpcPort        = ":50051"
 	restPort        = ":8081"
@@ -42,9 +42,7 @@ type DrugDoc struct {
 	TotalStock int32   `bson:"total_stock" json:"total_stock"`
 }
 
-// ============================================================
-// gRPC Handler: CheckDrugAvailability
-// ============================================================
+// CheckDrugAvailability adalah fungsi gRPC untuk mengecek stok obat (Tugas 2)
 func (s *server) CheckDrugAvailability(ctx context.Context, req *pb.CheckDrugRequest) (*pb.CheckDrugResponse, error) {
 	log.Printf("[gRPC Server] CheckDrugAvailability code=%s qty=%d", req.GetDrugCode(), req.GetQuantityNeeded())
 
@@ -90,9 +88,6 @@ func (s *server) CheckDrugAvailability(ctx context.Context, req *pb.CheckDrugReq
 	}, nil
 }
 
-// ============================================================
-// gRPC Handler: ReservePrescriptionStock
-// ============================================================
 func (s *server) ReservePrescriptionStock(ctx context.Context, req *pb.ReserveStockRequest) (*pb.ReserveStockResponse, error) {
 	log.Printf("[gRPC Server] ReservePrescriptionStock prescription_id=%s", req.GetPrescriptionId())
 	return &pb.ReserveStockResponse{
@@ -102,9 +97,6 @@ func (s *server) ReservePrescriptionStock(ctx context.Context, req *pb.ReserveSt
 	}, nil
 }
 
-// ============================================================
-// REST Baseline (HTTP/1.1 JSON)
-// ============================================================
 func startRESTServer(mongoClient *mongo.Client) {
 	http.HandleFunc("/api/v1/drugs/check", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -147,9 +139,6 @@ func startRESTServer(mongoClient *mongo.Client) {
 	}
 }
 
-// ============================================================
-// Main
-// ============================================================
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -167,13 +156,15 @@ func main() {
 	// 2. Jalankan REST server secara paralel (background)
 	go startRESTServer(client)
 
-	// 3. Jalankan RabbitMQ Consumer secara paralel (background)
+	// [JELASKAN INI - SANGAT PENTING] 
+	// Menjalankan Consumer RabbitMQ di background (goroutine).
+	// Di dalam fungsi ini terdapat logika Manual ACK, DLQ, dan Idempotensi (Redis/MongoDB).
 	go func() {
 		log.Println("[Pharmacy Service] Memulai RabbitMQ Consumer...")
 		consumer.StartPrescriptionConsumer(amqpURI, client)
 	}()
 
-	// 4. Jalankan gRPC server (Blocking)
+	// 3. Jalankan gRPC server (Blocking)
 	lis, err := net.Listen("tcp", grpcPort)
 	if err != nil {
 		log.Fatalf("Gagal membuka port %s: %v", grpcPort, err)

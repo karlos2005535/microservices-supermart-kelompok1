@@ -10,22 +10,26 @@ import (
 )
 
 func main() {
+	// [JELASKAN INI] Format URI RabbitMQ dengan %2F agar bisa masuk ke Vhost /medcore_vhost.
 	amqpURI := "amqp://admin_medcore:SecuredPassRabbit2026!@localhost:5672/%2Fmedcore_vhost"
 	log.Println("[Appointment Service] Menginisialisasi koneksi messaging...")
 
-	// 1. Jalankan Consumer Kompensasi Stok (Langkah 2.4) di background
+	// [JELASKAN INI - KOMPENSASI] Menjalankan Consumer di background (goroutine).
+	// Tugasnya mendengarkan event 'stock.exhausted' dari Farmasi jika obat kosong.
 	go consumer.StartStockExhaustedConsumer(amqpURI)
 
-	// 2. Inisialisasi Publisher
+	// [JELASKAN INI - PUBLISHER] Menginisialisasi Publisher untuk mengirim event konsultasi selesai.
 	pub, err := publisher.NewEventPublisher(amqpURI)
 	if err != nil {
 		log.Fatalf("Inisialisasi publisher gagal: %v", err)
 	}
 	defer pub.Close()
 
-	// 3. Simulasi event ketika konsultasi selesai (UJI DLQ)
+	// [JELASKAN INI - SIMULASI DLQ] 
+	// Di sini saya sengaja mengubah Quantity menjadi -1 untuk menguji fitur Dead Letter Queue (DLQ).
+	// Jika Quantity minus, Farmasi akan menganggap ini pesan rusak (poison message).
 	simulatedEvent := publisher.ConsultationCompletedEvent{
-		EventID:    "evt-uji-duplikat-123",
+		EventID:    "evt-uji-duplikat-123", // ID statis untuk menguji idempotensi
 		EventName:  "ConsultationCompletedEvent",
 		OccurredAt: time.Now().UTC().Format(time.RFC3339),
 		Producer:   "appointment-service",
@@ -37,7 +41,7 @@ func main() {
 			Prescription: publisher.PrescriptionData{
 				PrescriptionID: "RX-2026-9901",
 				Items: []publisher.PrescriptionItem{
-					// QUANTITY DIUBAH MENJADI -1 UNTUK UJI DLQ
+					// UJI DLQ: Kuantitas negatif!
 					{DrugCode: "MED-AMX-500", Quantity: -1, Dosage: "3x1 sehari sesudah makan"},
 				},
 			},
@@ -52,6 +56,7 @@ func main() {
 	defer cancel()
 
 	log.Println("[Appointment Service] Menerbitkan event konsultasi ke RabbitMQ...")
+	// [JELASKAN INI] Mengeksekusi pengiriman pesan ke RabbitMQ.
 	if err := pub.PublishConsultationCompleted(ctx, simulatedEvent); err != nil {
 		log.Fatalf("Gagal mempublikasikan event: %v", err)
 	}

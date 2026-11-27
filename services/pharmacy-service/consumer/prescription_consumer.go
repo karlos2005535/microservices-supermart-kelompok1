@@ -50,6 +50,20 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 	}
 	defer ch.Close()
 
+	// Memastikan Exchange sudah ada sebelum kita binding antrean
+	err = ch.ExchangeDeclare(
+		"medcore.clinical.events", // Nama Exchange
+		"topic",                   // Tipe
+		true,                      // Durable
+		false,                     // Auto-deleted
+		false,                     // Internal
+		false,                     // No-wait
+		nil,                       // Arguments
+	)
+	if err != nil {
+		log.Fatalf("[Pharmacy Consumer] Gagal mendeklarasikan exchange: %v", err)
+	}
+
 	// [DEMO - DLQ] Mendeklarasikan antrean dengan argumen Dead Letter Exchange (DLX).
 	// Jika ada pesan yang ditolak (NACK), RabbitMQ akan melemparnya ke DLX.
 	args := amqp.Table{
@@ -80,7 +94,7 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 		log.Fatalf("[Pharmacy Consumer] Gagal binding queue: %v", err)
 	}
 
-	// [DEMO - QOS] Prefetch Count = 10. 
+	// [DEMO - QOS] Prefetch Count = 10.
 	// Tujuan: Maksimal 10 pesan yang dipegang di RAM. Mencegah server OOM/Crash jika pesan menumpuk.
 	err = ch.Qos(10, 0, false)
 	if err != nil {
@@ -111,7 +125,7 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 			if err := json.Unmarshal(d.Body, &evt); err != nil {
 				log.Printf("[Pharmacy Consumer] Format pesan tidak valid, NACK tanpa requeue: %v", err)
 				// [DEMO - POISON PILL] Jika JSON rusak, langsung buang ke DLQ (requeue = false)
-				d.Nack(false, false) 
+				d.Nack(false, false)
 				continue
 			}
 
@@ -134,7 +148,7 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 			if isPoison {
 				log.Printf("[Pharmacy Consumer] Terdeteksi Poison Message! Mengirim NACK ke DLQ.")
 				// requeue = FALSE -> Pesan dialihkan ke DLQ (pharmacy.dlq)
-				d.Nack(false, false) 
+				d.Nack(false, false)
 				log.Println("---------------------------------------------------------")
 				continue
 			}
@@ -143,13 +157,13 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 			// [DEMO - KOMPENSASI STOK] Simulasi jika stok obat di gudang kosong.
 			// Ubah menjadi true saat presentasi untuk menunjukkan event balik ke Appointment.
 			// -------------------------------------------------------------
-			stokHabis := true 
+			stokHabis := true
 			if stokHabis {
 				log.Printf("[Pharmacy Consumer] Stok kosong! Mengirim event kompensasi ke Appointment...")
 				// Memanggil fungsi dari package publisher (mengirim event balik ke RabbitMQ)
 				publisher.PublishStockExhausted(amqpURI, evt.Payload.AppointmentID, "MED-AMX-500")
 				// Tetap ACK karena pesan berhasil ditangani (pesanan gagal, tapi sistem berjalan sukses)
-				d.Ack(false) 
+				d.Ack(false)
 				log.Println("---------------------------------------------------------")
 				continue
 			}
@@ -205,10 +219,10 @@ func StartPrescriptionConsumer(amqpURI string, mongoClient *mongo.Client) {
 				ProcessedAt: time.Now(),
 				Status:      "SUCCESS",
 			})
-			
+
 			if err != nil {
 				log.Printf("[Error] Gagal mencatat deduplikasi: %v. Requeue pesan.", err)
-				d.Nack(false, true) 
+				d.Nack(false, true)
 				cancel()
 				log.Println("---------------------------------------------------------")
 				continue
