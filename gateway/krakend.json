@@ -1,0 +1,61 @@
+{
+  "$schema": "https://www.krakend.io/schema/v2.6/krakend.json",
+  "version": 3,
+  "name": "MedCore API Gateway",
+  "port": 8080,
+  "timeout": "3000ms",
+  "endpoints": [
+    {
+      "endpoint": "/api/v1/products/{id}",
+      "method": "GET",
+      "output_encoding": "json",
+      "extra_config": {
+        "qos/ratelimit/router": {
+          "max_rate": 20,
+          "client_max_rate": 5,
+          "every": "1m",
+          "capacity": 5,
+          "strategy": "ip"
+        }
+      },
+      "backend": [
+        {
+          "url_pattern": "/api/v1/drugs/check?drug_code={id}",
+          "encoding": "json",
+          "host": ["http://host.docker.internal:8081"]
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/v1/orders/{id}",
+      "method": "GET",
+      "output_encoding": "json",
+      "backend": [
+        {
+          "url_pattern": "/appointments/{id}",
+          "encoding": "json",
+          "host": ["http://host.docker.internal:8082"]
+        }
+      ]
+    },
+    {
+      "endpoint": "/api/v1/order-summary/{order_id}",
+      "method": "GET",
+      "output_encoding": "json",
+      "backend": [
+        {
+          "url_pattern": "/appointments/{order_id}",
+          "group": "order_detail",
+          "encoding": "json",
+          "host": ["http://host.docker.internal:8082"]
+        },
+        {
+          "url_pattern": "/api/v1/drugs/check?drug_code={order_id}",
+          "group": "product_detail",
+          "encoding": "json",
+          "host": ["http://host.docker.internal:8081"]
+        }
+      ]
+    }
+  ]
+}

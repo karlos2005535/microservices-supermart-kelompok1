@@ -10,8 +10,22 @@ volumes:
   appointment_db_vol:
   pharmacy_db_vol:
   billing_db_vol:
+  rabbitmq_data:
+  redis_data:
 
 services:
+  # ================= API GATEWAY =================
+  api-gateway:
+    image: devopsfaith/krakend:2.6.3
+    container_name: medcore-gateway
+    ports:
+      - "8000:8080"
+    volumes:
+      - ./gateway/krakend.json:/etc/krakend/krakend.json:ro
+    networks:
+      - medcore-net
+
+  # ================= DATABASES (Ports Dikembalikan) =================
   patient-db:
     image: postgres:16-alpine
     container_name: medcore-patient-db
@@ -52,7 +66,7 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
       MONGO_INITDB_DATABASE: ${PHARMACY_DB_NAME}
     ports:
-      - "${HOST_PORT_PHARMACY_DB}:27017"
+      - "27018:27017" # <-- Mengembalikan port 27018
     volumes:
       - ./services/pharmacy-service/ddl/init.js:/docker-entrypoint-initdb.d/init.js:ro
       - pharmacy_db_vol:/data/db
@@ -76,3 +90,32 @@ services:
     networks:
       medcore-net:
         ipv4_address: 172.28.0.14
+
+  # ================= BROKER & CACHE =================
+  message-broker:
+    image: rabbitmq:3.13-management-alpine
+    container_name: medcore-message-broker
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_DEFAULT_VHOST}
+    ports:
+      - "${HOST_PORT_RABBITMQ_AMQP}:5672"
+      - "${HOST_PORT_RABBITMQ_MGMT}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      medcore-net:
+        ipv4_address: 172.28.0.20
+
+  medcore-redis:
+    image: redis:7-alpine
+    container_name: medcore-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      medcore-net:
+        ipv4_address: 172.28.0.21
